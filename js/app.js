@@ -763,6 +763,8 @@
   });
 
   // ---------- Khởi tạo ----------
+  // Xin trình duyệt giữ dữ liệu bền (không tự dọn khi thiếu dung lượng).
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   renderSide(); renderStaff(); fillEmpSelect(); renderSamples(); applyMode(); applyMirror();
   $('#qr-hint').hidden = !S().qr;
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
