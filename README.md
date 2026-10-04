@@ -7,7 +7,8 @@ Robot camera đặt ở cửa: **chấm công bằng khuôn mặt**, **theo dõi
 - **Camera tracking**: phát hiện nhiều khuôn mặt cùng lúc, gán ID theo dõi ổn định, vẽ khung + tên, đếm số người trong khung và lượt qua cửa trong ngày (tách nhân viên / khách lạ).
 - **Chấm công**: nhận diện nhân viên đã đăng ký, tự luân phiên Vào/Ra (hoặc bấm nút Vào/Ra), chống ghi trùng, lưu ảnh nhỏ làm bằng chứng, nhận biết đi muộn theo giờ bắt đầu ca.
 - **Robot chào hỏi**: mặt robot hoạt hình nhìn theo người trước camera, chào bằng giọng tiếng Việt (Web Speech API) theo buổi sáng/trưa/chiều/tối, chào khi về, chào cả khách lạ.
-- **Nhân sự**: đăng ký bằng 3–8 mẫu khuôn mặt chụp từ camera hoặc tải ảnh lên; sửa, xóa, tìm kiếm.
+- **Mã QR cá nhân (dự phòng)**: mỗi nhân viên có một mã QR riêng (tải PNG, in, thu hồi và tạo lại). Khi camera không nhận được mặt (khẩu trang, ngược sáng, đứng xa), giơ mã lên là chấm công đúng người. Quét bằng BarcodeDetector của trình duyệt, dự phòng jsQR. Tắt được trong Cài đặt.
+- **Nhân sự**: đăng ký bằng 3–8 mẫu khuôn mặt chụp từ camera hoặc tải ảnh lên; sửa, xóa, tìm kiếm, xem mã QR.
 - **Lịch sử**: lọc theo ngày và nhân viên, tổng hợp Vào đầu / Ra cuối / giờ công / đi muộn, xuất CSV chi tiết và CSV tổng hợp (mở được bằng Excel).
 - **Cài đặt**: chọn camera, lật gương, bộ phát hiện Tiny/SSD, ngưỡng khớp, số khung xác nhận, chế độ chấm công, giọng nói; sao lưu / khôi phục JSON.
 
@@ -46,10 +47,24 @@ index.html      giao diện 3 tab: Camera · Nhân sự · Lịch sử + hộp t
 css/style.css   giao diện (màu chủ đạo #0061FF, font Manrope, hỗ trợ dark mode)
 js/store.js     lưu trữ localStorage: nhân viên, lịch sử, lượt qua cửa, cài đặt
 js/facelib.js   bọc thư viện face-api (TensorFlow.js) + tracker theo IoU + gom phiếu nhận diện
+js/qr.js        tạo và quét mã QR cá nhân
 js/app.js       luồng camera, vòng lặp nhận diện, chấm công, robot chào, đăng ký, lịch sử, cài đặt
 ```
 
 Thư viện: [@vladmandic/face-api](https://github.com/vladmandic/face-api) 1.7.15 (tải từ jsDelivr, dự phòng unpkg). Mô hình: Tiny Face Detector, Face Landmark 68 Tiny, Face Recognition (vector 128 chiều). Có thể bật SSD MobileNet trong Cài đặt nếu cần chính xác hơn.
+
+## Có cần backend (BE) không?
+
+Bản nháp này **không có BE**. Toàn bộ nhận diện chạy trong trình duyệt bằng TensorFlow.js: mẫu khuôn mặt (vector 128 số, không lưu ảnh gốc) và lịch sử nằm trong localStorage của thiết bị đặt ở cửa. Ưu điểm: không tốn máy chủ, không gửi hình ảnh ra ngoài, chạy được ngay.
+
+Khi nào cần thêm BE (hoặc dùng Lark Base làm nơi lưu chung):
+
+- Nhiều thiết bị / nhiều cửa dùng chung một danh sách nhân viên và một lịch sử.
+- Nhân sự, kế toán xem báo cáo từ máy khác, không phải đến thiết bị ở cửa để xuất CSV.
+- Cần lưu lâu hơn giới hạn ~5 MB của localStorage, hoặc cần sao lưu tự động.
+- Cần tích hợp bảng lương, phê duyệt, thông báo.
+
+Lúc đó phần nhận diện vẫn chạy trên thiết bị; BE chỉ nhận kết quả (ai, lúc nào, Vào/Ra, cách ghi nhận) và phát danh sách nhân viên xuống. Mã nguồn đã tách `js/store.js` riêng để thay lớp lưu trữ mà không đụng phần nhận diện.
 
 ## Cách nhận diện hoạt động
 
@@ -58,6 +73,7 @@ Thư viện: [@vladmandic/face-api](https://github.com/vladmandic/face-api) 1.7.
 3. Tracker gán ID cho từng khuôn mặt giữa các khung hình; một khuôn mặt chỉ được "xác nhận" khi đủ N khung liên tiếp (mặc định 5) cho cùng một kết quả, để tránh nhận nhầm thoáng qua.
 4. Khi xác nhận là nhân viên và đang bật chấm công: ghi Vào/Ra theo quy tắc chống trùng (60 giây) và khoảng cách tối thiểu giữa Vào và Ra (10 phút).
 5. Khi một khuôn mặt rời khung sau khi đã được theo dõi đủ lâu: đếm 1 lượt qua cửa.
+6. Song song, khoảng 3 lần mỗi giây quét mã QR trong khung hình. Mã hợp lệ (đúng nhân viên, đúng khóa chưa thu hồi) được ghi nhận như một lượt chấm công với cách ghi "Mã QR".
 
 ## Giới hạn hiện tại
 

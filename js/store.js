@@ -17,6 +17,7 @@ const Store = (() => {
     voiceRate: 1.0,
     workStart: '08:30',   // giờ bắt đầu ca, để nhận biết đi muộn
     greetGuests: true,    // chào cả người lạ
+    qr: true,             // cho phép chấm công bằng mã QR cá nhân
   };
 
   function read(key, fallback) {

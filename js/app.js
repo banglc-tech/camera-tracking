@@ -120,6 +120,7 @@
       if (S().detector === 'ssd') { try { await FaceLib.ensureSsd(); } catch (e) { console.warn(e); } }
       $('#model-status').textContent = 'Sẵn sàng'; $('#model-status').className = 'badge badge-ok';
       stageMsg.hidden = true;
+      QR.ensureScanner().catch(e => { console.warn('QR', e); $('#qr-hint').textContent = 'Trình duyệt này không quét được mã QR, chỉ dùng nhận diện khuôn mặt.'; });
       Robot.say(pickPhrase('boot'), true);
       loop();
     } catch (e) {
@@ -137,6 +138,7 @@
   let fpsT = performance.now(), fpsN = 0, fps = 0;
   let detecting = false;
   let lastTracks = [];
+  let lastQrScan = 0, lastQrText = '', lastQrAt = 0;
 
   async function loop() {
     if (!stream) return;
@@ -162,6 +164,10 @@
           if (t.confirmed) onConfirmed(t, now);
         }
         lastTracks = tracks;
+        if (S().qr && attendanceOn && QR.scanReady && now - lastQrScan > 350) {
+          lastQrScan = now;
+          QR.scan(video).then(onQr);
+        }
         draw(tracks);
         Robot.track(tracks);
         fpsN++; if (now - fpsT > 1000) { fps = Math.round(fpsN * 1000 / (now - fpsT)); fpsN = 0; fpsT = now; $('#chip-fps').textContent = fps + ' fps'; }
@@ -242,8 +248,21 @@
     if (res && res.skipped) { /* chỉ nhắc nhẹ, không spam */ }
   }
 
-  /** Ghi 1 lượt chấm công. type = null => tự luân phiên. */
-  function recordAttendance(emp, type, track) {
+  /** Xử lý mã QR đọc được từ camera. */
+  function onQr(text) {
+    if (!text) return;
+    const now = Date.now();
+    if (text === lastQrText && now - lastQrAt < 4000) return; // cùng mã, đọc lặp
+    lastQrText = text; lastQrAt = now;
+    const q = QR.decode(text);
+    if (!q) { toast('Mã QR không phải mã chấm công'); return; }
+    const emp = Store.findEmployee(q.id);
+    if (!emp || emp.qrKey !== q.key) { toast('Mã QR không hợp lệ hoặc đã bị thu hồi'); Robot.say('Mã này không còn dùng được, bạn hỏi quản lý giúp nhé.'); return; }
+    recordAttendance(emp, null, null, 'qr');
+  }
+
+  /** Ghi 1 lượt chấm công. type = null => tự luân phiên. method: face | qr | manual */
+  function recordAttendance(emp, type, track, method = 'face') {
     const nowTs = Date.now();
     const todays = todayLogsOf(emp.id);
     const last = todays[todays.length - 1];
@@ -266,13 +285,13 @@
       else type = last.type === 'in' ? 'out' : 'in';
     }
     const log = {
-      id: Store.uid(), empId: emp.id, name: emp.name, code: emp.code || '', type, ts: nowTs,
+      id: Store.uid(), empId: emp.id, name: emp.name, code: emp.code || '', type, ts: nowTs, method,
       dist: track && isFinite(track.bestDist) ? Number(track.bestDist.toFixed(3)) : null,
       snap: S().saveSnap && track ? snapshot(track.box) : null,
     };
     if (!Store.addLog(log)) toast('Bộ nhớ trình duyệt đầy, không lưu được. Hãy xuất và xóa bớt lịch sử.');
     const late = type === 'in' && isLate(nowTs);
-    showGreet(emp, type, `${type === 'in' ? 'Vào' : 'Ra'} lúc ${fmtTime(nowTs)}${late ? ' · hơi muộn rồi' : ''}`);
+    showGreet(emp, type, `${type === 'in' ? 'Vào' : 'Ra'} lúc ${fmtTime(nowTs)}${late ? ' · hơi muộn rồi' : ''}${method === 'qr' ? ' · bằng QR' : ''}`);
     Robot.say(pickPhrase(type === 'in' ? (late ? 'late' : 'in') : 'out', emp));
     beep(type);
     renderSide();
@@ -309,7 +328,7 @@
     const t = largestConfirmed();
     if (!t) return toast('Chưa nhận ra ai trước camera');
     const emp = Store.findEmployee(t.label);
-    recordAttendance(emp, type, t);
+    recordAttendance(emp, type, t, 'manual');
   }
 
   // ---------- Lời chào (hiển thị + giọng nói) ----------
@@ -536,7 +555,7 @@
       descriptors: samples.map(s => s.descriptor), avatar: samples[0].thumb,
     };
     if (editingId) { Store.updateEmployee(editingId, data); toast('Đã cập nhật ' + name); }
-    else { Store.addEmployee({ id: Store.uid(), createdAt: Date.now(), ...data }); toast('Đã thêm ' + name); Robot.say(`Rất vui được làm quen, ${shortName(name)}!`, true); }
+    else { Store.addEmployee({ id: Store.uid(), createdAt: Date.now(), qrKey: Store.uid(), ...data }); toast('Đã thêm ' + name); Robot.say(`Rất vui được làm quen, ${shortName(name)}!`, true); }
     resetEnroll(); renderStaff(); renderSide(); fillEmpSelect();
   });
 
@@ -548,11 +567,13 @@
         <div class="person-main"><div class="person-name">${esc(e.name)}</div>
         <div class="person-sub">${esc([e.code, e.dept].filter(Boolean).join(' · '))} · ${e.descriptors.length} mẫu</div></div>
         <div class="actions">
+          <button class="btn btn-ghost btn-sm" data-act="qr" data-id="${e.id}">QR</button>
           <button class="btn btn-ghost btn-sm" data-act="edit" data-id="${e.id}">Sửa</button>
           <button class="btn btn-ghost btn-sm" data-act="del" data-id="${e.id}">Xóa</button>
         </div></li>`).join('') : '<li class="empty">Chưa có nhân viên nào phù hợp.</li>';
     $('#staff-list').querySelectorAll('button').forEach(b => b.onclick = () => {
       const emp = Store.findEmployee(b.dataset.id); if (!emp) return;
+      if (b.dataset.act === 'qr') { openQr(emp); return; }
       if (b.dataset.act === 'del') {
         if (confirm(`Xóa ${emp.name}? Lịch sử chấm công vẫn được giữ.`)) { Store.removeEmployee(emp.id); renderStaff(); renderSide(); fillEmpSelect(); }
       } else {
@@ -566,6 +587,40 @@
     $('#staff-count').textContent = Store.employees.length;
   }
   $('#staff-search').addEventListener('input', renderStaff);
+
+  // ---------- Mã QR nhân viên ----------
+  const qrModal = $('#modal-qr');
+  let qrEmp = null;
+  async function openQr(emp) {
+    qrEmp = emp;
+    if (!emp.qrKey) { Store.updateEmployee(emp.id, { qrKey: Store.uid() }); }
+    $('#qr-name').textContent = emp.name;
+    $('#qr-sub').textContent = [emp.code, emp.dept].filter(Boolean).join(' · ');
+    $('#qr-img').removeAttribute('src'); $('#qr-img').alt = 'Đang tạo mã…';
+    qrModal.hidden = false;
+    try { await QR.ensureGenerator(); $('#qr-img').src = QR.toDataURL(QR.encode(emp)); }
+    catch (e) { toast('Không tải được thư viện tạo QR (cần mạng)'); $('#qr-img').alt = 'Không tạo được mã'; }
+  }
+  $('#btn-qr-close').addEventListener('click', () => { qrModal.hidden = true; });
+  qrModal.addEventListener('click', (e) => { if (e.target === qrModal) qrModal.hidden = true; });
+  $('#btn-qr-download').addEventListener('click', () => {
+    const src = $('#qr-img').getAttribute('src'); if (!src || !qrEmp) return;
+    const a = document.createElement('a'); a.href = src; a.download = `QR_${(qrEmp.code || qrEmp.name).replace(/\s+/g, '_')}.png`; a.click();
+  });
+  $('#btn-qr-print').addEventListener('click', () => {
+    const src = $('#qr-img').getAttribute('src'); if (!src || !qrEmp) return;
+    const w = window.open('', '_blank'); if (!w) return toast('Trình duyệt chặn cửa sổ in');
+    w.document.write(`<title>QR ${esc(qrEmp.name)}</title><body style="font-family:Manrope,system-ui,sans-serif;text-align:center;padding:24px">
+      <img src="${src}" style="width:70mm;height:70mm"><h2 style="margin:8px 0 2px">${esc(qrEmp.name)}</h2><div style="color:#555">${esc([qrEmp.code, qrEmp.dept].filter(Boolean).join(' · '))}</div>
+      <script>onload=()=>{print();}</` + `script></body>`);
+    w.document.close();
+  });
+  $('#btn-qr-renew').addEventListener('click', () => {
+    if (!qrEmp) return;
+    if (!confirm(`Tạo mã mới cho ${qrEmp.name}? Mã cũ sẽ không dùng được nữa.`)) return;
+    Store.updateEmployee(qrEmp.id, { qrKey: Store.uid() });
+    openQr(Store.findEmployee(qrEmp.id)); toast('Đã tạo mã mới');
+  });
 
   // ---------- Lịch sử ----------
   const histFrom = $('#hist-from'), histTo = $('#hist-to'), histEmp = $('#hist-emp');
@@ -606,14 +661,17 @@
     $('#hist-body').innerHTML = logs.length ? logs.slice(0, 500).map(l => `
       <tr><td>${fmtDate(l.ts)} ${fmtTimeS(l.ts)}</td><td>${esc(l.name)}</td><td>${esc(l.code || '')}</td>
       <td><span class="tag tag-${l.type}">${l.type === 'in' ? 'Vào' : 'Ra'}</span></td>
+      <td>${methodLabel(l.method)}</td>
       <td>${l.snap ? `<img src="${l.snap}" alt="">` : '<span class="muted">—</span>'}</td>
       <td>${l.dist != null ? l.dist.toFixed(2) : '—'}</td>
       <td><button class="btn btn-ghost btn-sm" data-del="${l.id}">Xóa</button></td></tr>`).join('')
-      : '<tr><td colspan="7" class="empty">Chưa có dữ liệu trong khoảng này.</td></tr>';
+      : '<tr><td colspan="8" class="empty">Chưa có dữ liệu trong khoảng này.</td></tr>';
     $('#hist-body').querySelectorAll('button[data-del]').forEach(b => b.onclick = () => {
       if (confirm('Xóa dòng chấm công này?')) { Store.removeLog(b.dataset.del); renderHistory(); renderSide(); }
     });
   }
+  const METHODS = { face: 'Khuôn mặt', qr: 'Mã QR', manual: 'Bấm nút' };
+  function methodLabel(m) { return m === 'qr' ? '<span class="tag tag-qr">QR</span>' : esc(METHODS[m] || METHODS.face); }
   function downloadCSV(name, rows) {
     const csv = '﻿' + rows.map(r => r.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');
     const a = document.createElement('a');
@@ -624,8 +682,8 @@
     const logs = rangeLogs();
     if (!logs.length) return toast('Không có dữ liệu để xuất');
     downloadCSV(`cham-cong_${histFrom.value}_${histTo.value}.csv`, [
-      ['Ngày', 'Giờ', 'Nhân viên', 'Mã NV', 'Loại', 'Độ lệch'],
-      ...logs.map(l => [fmtDate(l.ts), fmtTimeS(l.ts), l.name, l.code, l.type === 'in' ? 'Vào' : 'Ra', l.dist ?? '']),
+      ['Ngày', 'Giờ', 'Nhân viên', 'Mã NV', 'Loại', 'Cách', 'Độ lệch'],
+      ...logs.map(l => [fmtDate(l.ts), fmtTimeS(l.ts), l.name, l.code, l.type === 'in' ? 'Vào' : 'Ra', METHODS[l.method] || METHODS.face, l.dist ?? '']),
     ]);
   });
   $('#btn-export-summary').addEventListener('click', () => {
@@ -650,6 +708,7 @@
     $('#set-threshold').value = s.threshold; $('#set-threshold-val').textContent = Number(s.threshold).toFixed(2);
     $('#set-confirm').value = s.confirmFrames; $('#set-mode').value = s.mode;
     $('#set-cooldown').value = s.cooldownSec; $('#set-mingap').value = s.minGapMin; $('#set-snap').checked = !!s.saveSnap;
+    $('#set-qr').checked = !!s.qr;
     $('#set-voice').checked = !!s.voice; $('#set-voicerate').value = s.voiceRate; $('#set-workstart').value = s.workStart; $('#set-guests').checked = !!s.greetGuests;
     $('#set-usage').textContent = (Store.usageBytes() / 1024).toFixed(0) + ' KB';
     $('#set-device').value = s.deviceId || '';
@@ -666,6 +725,7 @@
   bind('#set-cooldown', 'cooldownSec', t => Math.max(5, Number(t.value) || 60));
   bind('#set-mingap', 'minGapMin', t => Math.max(0, Number(t.value) || 0));
   bind('#set-snap', 'saveSnap', t => t.checked);
+  bind('#set-qr', 'qr', t => t.checked);
   bind('#set-voice', 'voice', t => t.checked);
   bind('#set-voicerate', 'voiceRate', t => Number(t.value) || 1);
   bind('#set-workstart', 'workStart', t => t.value || '08:30');
@@ -673,6 +733,7 @@
   bind('#set-device', 'deviceId', t => t.value);
   async function afterSetting(key) {
     if (key === 'mirror') applyMirror();
+    if (key === 'qr') { $('#qr-hint').hidden = !S().qr; if (S().qr && stream) QR.ensureScanner().catch(() => {}); }
     if (key === 'mode') applyMode();
     if (key === 'detector' && S().detector === 'ssd') { try { await FaceLib.ensureSsd(); toast('Đã tải bộ phát hiện SSD'); } catch (e) { toast('Không tải được SSD, dùng Tiny'); Store.saveSettings({ detector: 'tiny' }); } }
     if (key === 'device' || key === 'deviceId') { try { await startCamera(); } catch (e) { toast('Không mở được camera đã chọn'); } }
@@ -703,6 +764,7 @@
 
   // ---------- Khởi tạo ----------
   renderSide(); renderStaff(); fillEmpSelect(); renderSamples(); applyMode(); applyMirror();
+  $('#qr-hint').hidden = !S().qr;
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     showStageMsg('Trình duyệt này không hỗ trợ camera. Hãy dùng Chrome, Edge hoặc Safari mới.', false);
   } else {
